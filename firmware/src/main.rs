@@ -162,7 +162,8 @@ async fn run(spawner: Spawner) -> anyhow::Result<()> {
     // ── Slint UI ───────────────────────────────────────────────────────────
     let window = platform::init(PANEL_SIZE, PANEL_SIZE)?;
 
-    let ui = ui::App::new(audio::AudioSink).map_err(|e| anyhow!("Window creation failed: {e}"))?;
+    let ui = ui::App::new(audio::AudioSink, ui::NoopStore)
+        .map_err(|e| anyhow!("Window creation failed: {e}"))?;
     // MinimalSoftwareWindow only renders once it is visible and dirty.
     ui.show().map_err(|e| anyhow!("Window show failed: {e}"))?;
     window.request_redraw();

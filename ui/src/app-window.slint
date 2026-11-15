@@ -3,7 +3,7 @@
 // Three screens live in this single window:
 //   start     - landing screen with "Start New Session" and "Customize"
 //   session   - breathing exercise with a close (x) button at the bottom
-//   customize - scent device, breathing pattern, and duration configuration
+//   customize - a stack of settings pages (duration, pattern, scent dispenser)
 //
 // The screen is selected by the `screen` state property. Screens are wrapped in
 // `if` blocks so Slint only instantiates the one that is visible.
@@ -14,6 +14,17 @@ enum Screen {
     customize,
 }
 
+// Pages of the Customize stack. Internal: the host never navigates these, and
+// the page resets to the menu each time Customize is opened.
+enum CustomizePage {
+    root,
+    duration,
+    pattern,
+    pattern-edit,
+    scent,
+    scent-link,
+}
+
 // Audible cues. The UI only names them; a host turns them into samples.
 export enum Sound {
     breath-in,
@@ -22,15 +33,31 @@ export enum Sound {
     ding,
 }
 
-// "6-0-2-0" = inhale-hold-exhale-hold, in seconds.
+// "6-0-2-0" = inhale-hold-exhale-hold, in seconds. The holds are named for the
+// phase they follow: `hold-inhale` is the hold after the inhale.
 struct BreathPattern {
     name: string,
     hint: string,
     inhale: int,
-    hold1: int,
+    hold-inhale: int,
     exhale: int,
-    hold2: int,
+    hold-exhale: int,
     accent: color,
+}
+
+// Persisted settings, and the single source of truth for the breathing rhythm.
+// There is no stored pattern index: a preset "matches" when its numbers equal
+// these, otherwise the rhythm is custom.
+//
+// Mirrored to Rust as `ui::Settings`; field names become snake_case there
+// (`hold_inhale`, `hold_exhale`).
+export struct Settings {
+    minutes: int,
+    inhale: int,
+    hold-inhale: int,
+    exhale: int,
+    hold-exhale: int,
+    scent-on: bool,
 }
 
 component SectionLabel inherits Text {
@@ -46,8 +73,8 @@ component ActionButton inherits Rectangle {
     in property <bool> primary: true;
     callback clicked;
 
-    height: 56px;
-    border-radius: 16px;
+    height: 68px;
+    border-radius: 18px;
     // Solid fill: the software renderer draws gradients as plain rectangles and
     // ignores the rounded clip, so gradients cannot be used on rounded shapes.
     background: root.primary ? #4facfe : #ffffff0d;
@@ -57,7 +84,7 @@ component ActionButton inherits Rectangle {
     Text {
         text: root.text;
         color: root.primary ? #0d0d12 : #ffffff;
-        font-size: 16px;
+        font-size: 17px;
         font-weight: 700;
         horizontal-alignment: center;
         vertical-alignment: center;
@@ -74,9 +101,9 @@ component ActionButton inherits Rectangle {
 component CloseButton inherits Rectangle {
     callback clicked;
 
-    width: 56px;
-    height: 56px;
-    border-radius: 28px;
+    width: 68px;
+    height: 68px;
+    border-radius: 34px;
     background: #ffffff12;
     border-width: 1px;
     border-color: #ffffff20;
@@ -84,7 +111,7 @@ component CloseButton inherits Rectangle {
     Text {
         text: "×";
         y: -2px;
-        font-size: 34px;
+        font-size: 38px;
         color: #ffffff;
         horizontal-alignment: center;
         vertical-alignment: center;
@@ -98,112 +125,199 @@ component CloseButton inherits Rectangle {
     // animate opacity { duration: 120ms; }
 }
 
-component PatternRow inherits Rectangle {
-    in property <int> index;
+// Title row for a Customize sub-page. The back region is a full 56px square
+// rather than just the glyph: the arrow sits at the very edge of the panel,
+// where a small target is hardest to hit.
+component PageHeader inherits Rectangle {
     in property <string> title;
-    in property <string> hint;
-    in property <string> numbers;
-    in property <color> accent;
-    in property <bool> selected;
-    callback picked(int);
+    callback back;
 
-    height: 46px;
-    border-radius: 12px;
-    background: #ffffff0a;
-    border-width: 1px;
-    border-color: root.selected ? root.accent : #ffffff14;
-
-    // Accent wash, kept as a child so the border and text stay fully opaque.
-    Rectangle {
-        background: root.accent;
-        opacity: root.selected ? 0.14 : 0;
-        border-radius: parent.border-radius;
-        // animate opacity { duration: 150ms; }
-    }
+    height: 56px;
 
     HorizontalLayout {
-        padding-left: 14px;
-        padding-right: 14px;
-        spacing: 10px;
-        alignment: center;
+        spacing: 8px;
+        alignment: start;
 
-        VerticalLayout {
-            horizontal-stretch: 1;
-            spacing: 0px;
-            alignment: center;
+        Rectangle {
+            width: 56px;
+            height: 56px;
 
             Text {
-                text: root.title;
-                font-size: 14px;
-                font-weight: 600;
+                text: "‹";
+                y: -3px;
+                font-size: 32px;
+                font-weight: 300;
                 color: #ffffff;
+                horizontal-alignment: center;
+                vertical-alignment: center;
             }
-            Text {
-                text: root.hint;
-                font-size: 11px;
-                color: #8f9bb3;
+
+            ta := TouchArea {
+                clicked => { root.back(); }
             }
+            opacity: ta.pressed ? 0.6 : 1;
         }
 
         Text {
-            text: root.numbers;
-            font-size: 13px;
-            font-weight: 600;
-            color: root.selected ? root.accent : #c7cede;
+            text: root.title;
+            font-size: 24px;
+            font-weight: 300;
+            color: #ffffff;
+            vertical-alignment: center;
         }
-
-        // Radio indicator
-        Rectangle {
-            width: 18px;
-            height: 18px;
-            border-radius: 9px;
-            border-width: 1.5px;
-            border-color: root.selected ? root.accent : #ffffff30;
-            background: #ffffff00;
-
-            Rectangle {
-                width: 8px;
-                height: 8px;
-                x: (parent.width - self.width) / 2;
-                y: (parent.height - self.height) / 2;
-                border-radius: 4px;
-                background: root.accent;
-                opacity: root.selected ? 1 : 0;
-                // animate opacity { duration: 150ms; }
-            }
-        }
-    }
-
-    TouchArea {
-        clicked => { root.picked(root.index); }
     }
 }
 
-component DurationChip inherits Rectangle {
-    in property <int> minutes;
-    in property <bool> selected;
-    callback picked(int);
+// One row of a Customize menu: title on the left, current value on the right.
+// The whole row is the touch target.
+component MenuRow inherits Rectangle {
+    in property <string> title;
+    in property <string> value;
+    in property <bool> selected: false;
+    callback picked;
 
-    height: 44px;
-    border-radius: 14px;
-    background: root.selected ? #4facfe : #ffffff0a;
+    height: 72px;
+    border-radius: 16px;
+    background: #ffffff0a;
     border-width: 1px;
     border-color: root.selected ? #4facfe : #ffffff14;
 
+    HorizontalLayout {
+        padding-left: 18px;
+        padding-right: 18px;
+        spacing: 10px;
+        alignment: center;
+
+        Text {
+            text: root.title;
+            font-size: 16px;
+            font-weight: 600;
+            color: #ffffff;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+        }
+
+        Text {
+            text: root.value;
+            font-size: 14px;
+            color: root.selected ? #4facfe : #8f9bb3;
+            vertical-alignment: center;
+        }
+
+        Text {
+            text: "›";
+            y: -2px;
+            font-size: 26px;
+            font-weight: 300;
+            color: #ffffff40;
+            vertical-alignment: center;
+        }
+    }
+
+    ta := TouchArea {
+        clicked => { root.picked(); }
+    }
+    opacity: ta.pressed ? 0.75 : 1;
+}
+
+component StepButton inherits Rectangle {
+    in property <string> label;
+    callback clicked;
+
+    width: 56px;
+    height: 56px;
+    border-radius: 14px;
+    background: #ffffff0f;
+    border-width: 1px;
+    border-color: #ffffff1a;
+
     Text {
-        text: root.minutes + " min";
-        font-size: 13px;
-        font-weight: 600;
-        color: root.selected ? #0d0d12 : #c7cede;
+        text: root.label;
+        font-size: 26px;
+        font-weight: 300;
+        color: #ffffff;
         horizontal-alignment: center;
         vertical-alignment: center;
     }
 
     ta := TouchArea {
-        clicked => { root.picked(root.minutes); }
+        clicked => { root.clicked(); }
     }
-    opacity: ta.pressed ? 0.75 : 1;
-    // animate opacity { duration: 120ms; }
+    opacity: ta.pressed ? 0.6 : 1;
+}
+
+// "- value +" control. Clamps here so every caller gets a valid range for free.
+component Stepper inherits Rectangle {
+    in property <int> value;
+    in property <string> suffix;
+    in property <int> min: 1;
+    in property <int> max: 60;
+    callback changed(int);
+
+    height: 72px;
+
+    HorizontalLayout {
+        spacing: 8px;
+        alignment: center;
+
+        StepButton {
+            label: "-";
+            clicked => { root.changed(Math.max(root.min, root.value - 1)); }
+        }
+
+        Text {
+            text: root.value + " " + root.suffix;
+            font-size: 26px;
+            font-weight: 300;
+            color: #ffffff;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+
+        StepButton {
+            label: "+";
+            clicked => { root.changed(Math.min(root.max, root.value + 1)); }
+        }
+    }
+}
+
+// Label plus stepper, for the four steps of a custom rhythm.
+component StepRow inherits Rectangle {
+    in property <string> label;
+    in property <int> value;
+    in property <int> min: 0;
+    callback changed(int);
+
+    height: 72px;
+    border-radius: 16px;
+    background: #ffffff0a;
+    border-width: 1px;
+    border-color: #ffffff14;
+
+    HorizontalLayout {
+        padding-left: 18px;
+        padding-right: 12px;
+        spacing: 10px;
+        alignment: center;
+
+        Text {
+            text: root.label;
+            font-size: 16px;
+            font-weight: 600;
+            color: #ffffff;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+        }
+
+        Stepper {
+            value: root.value;
+            suffix: "s";
+            min: root.min;
+            max: 60;
+            changed(v) => { root.changed(v); }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -227,10 +341,10 @@ component StartScreen inherits Rectangle {
     }
 
     VerticalLayout {
-        padding-top: 34px;
+        padding-top: 30px;
         padding-left: 30px;
         padding-right: 30px;
-        padding-bottom: 18px;
+        padding-bottom: 16px;
         spacing: 0px;
 
         Text {
@@ -258,7 +372,9 @@ component StartScreen inherits Rectangle {
         // Decorative breathing hero
         Rectangle {
             vertical-stretch: 1;
-            min-height: 140px;
+            // Taller buttons leave less room than before, so the hero floor is
+            // lower; it still absorbs whatever height is left over.
+            min-height: 120px;
 
             Rectangle {
                 width: 238px;
@@ -320,7 +436,7 @@ component StartScreen inherits Rectangle {
         }
 
         Text {
-            height: 44px;
+            height: 36px;
             text: "Powered by SiFli-rs";
             font-size: 12px;
             color: #5f6a7f;
@@ -353,7 +469,7 @@ component SessionScreen inherits Rectangle {
         padding-top: 30px;
         padding-left: 30px;
         padding-right: 30px;
-        padding-bottom: 18px;
+        padding-bottom: 16px;
         spacing: 0px;
 
         HorizontalLayout {
@@ -460,7 +576,7 @@ component SessionScreen inherits Rectangle {
 
         // Close button, centered at the bottom
         HorizontalLayout {
-            height: 56px;
+            height: 68px;
             alignment: center;
             CloseButton {
                 clicked => { root.close-clicked(); }
@@ -478,185 +594,234 @@ component SessionScreen inherits Rectangle {
 }
 
 // ---------------------------------------------------------------------------
-// Customize screen
+// Customize screen (a stack of pages)
 // ---------------------------------------------------------------------------
 
 component CustomizeScreen inherits Rectangle {
-    in-out property <int> selected-pattern;
-    in-out property <int> selected-duration;
+    in-out property <int> minutes;
+    in-out property <int> inhale;
+    in-out property <int> hold-inhale;
+    in-out property <int> exhale;
+    in-out property <int> hold-exhale;
     in property <[BreathPattern]> patterns;
-    in property <[int]> durations;
-    in property <bool> scent-connected;
+    in-out property <bool> scent-on;
+    // Derived by MainWindow: the preset whose numbers match, or -1 when custom.
+    in property <int> matched-pattern: -1;
+    in property <string> preset-name;
     callback back-clicked;
-    callback scent-toggled;
+
+    // Lives here rather than in MainWindow so opening Customize always starts
+    // at the menu: the screen is re-instantiated by the `if` in MainWindow.
+    property <CustomizePage> page: CustomizePage.root;
 
     VerticalLayout {
-        padding-top: 30px;
+        padding-top: 24px;
         padding-left: 30px;
         padding-right: 30px;
         padding-bottom: 20px;
         spacing: 0px;
 
-        // Header
-        HorizontalLayout {
-            height: 32px;
-            alignment: space-between;
+        if root.page == CustomizePage.root : VerticalLayout {
+            spacing: 0px;
 
-            HorizontalLayout {
-                spacing: 6px;
-                alignment: start;
-                Text {
-                    text: "‹";
-                    y: -3px;
-                    width: 24px;
-                    font-size: 28px;
-                    font-weight: 300;
-                    color: #ffffff;
-                    vertical-alignment: center;
-                    TouchArea {
-                        clicked => { root.back-clicked(); }
+            PageHeader {
+                title: "Customize";
+                back => { root.back-clicked(); }
+            }
+
+            Rectangle { height: 14px; }
+
+            MenuRow {
+                title: "Duration";
+                value: root.minutes + " min";
+                picked => { root.page = CustomizePage.duration; }
+            }
+            Rectangle { height: 10px; }
+            MenuRow {
+                title: "Pattern";
+                value: root.preset-name;
+                picked => { root.page = CustomizePage.pattern; }
+            }
+            Rectangle { height: 10px; }
+            MenuRow {
+                title: "Scent Dispenser";
+                value: root.scent-on ? "On" : "Off";
+                picked => { root.page = CustomizePage.scent; }
+            }
+
+            Rectangle { vertical-stretch: 1; min-height: 0px; }
+        }
+
+        if root.page == CustomizePage.duration : VerticalLayout {
+            spacing: 0px;
+
+            PageHeader {
+                title: "Duration";
+                back => { root.page = CustomizePage.root; }
+            }
+
+            Rectangle { height: 18px; }
+            SectionLabel { text: "DURATION IN MINUTES"; }
+            Rectangle { height: 10px; }
+
+            Rectangle {
+                height: 96px;
+                border-radius: 16px;
+                background: #ffffff0a;
+                border-width: 1px;
+                border-color: #ffffff14;
+
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+
+                    Stepper {
+                        value: root.minutes;
+                        suffix: "min";
+                        min: 1;
+                        max: 60;
+                        changed(v) => { root.minutes = v; }
                     }
                 }
-                Text {
-                    text: "Customize";
-                    font-size: 24px;
-                    font-weight: 300;
-                    color: #ffffff;
-                    vertical-alignment: center;
+            }
+
+            Rectangle { vertical-stretch: 1; min-height: 0px; }
+        }
+
+        if root.page == CustomizePage.pattern : VerticalLayout {
+            spacing: 0px;
+
+            PageHeader {
+                title: "Pattern";
+                back => { root.page = CustomizePage.root; }
+            }
+
+            Rectangle { height: 12px; }
+
+            VerticalLayout {
+                spacing: 8px;
+
+                for p[i] in root.patterns : MenuRow {
+                    title: p.name;
+                    value: p.inhale + "-" + p.hold-inhale + "-" + p.exhale + "-" + p.hold-exhale;
+                    selected: i == root.matched-pattern;
+                    picked => {
+                        root.inhale = p.inhale;
+                        root.hold-inhale = p.hold-inhale;
+                        root.exhale = p.exhale;
+                        root.hold-exhale = p.hold-exhale;
+                    }
                 }
             }
+
+            Rectangle { height: 14px; }
+
+            ActionButton {
+                text: "Customize pattern";
+                primary: false;
+                clicked => { root.page = CustomizePage.pattern-edit; }
+            }
+
+            Rectangle { vertical-stretch: 1; min-height: 0px; }
+        }
+
+        if root.page == CustomizePage.pattern-edit : VerticalLayout {
+            spacing: 0px;
+
+            PageHeader {
+                title: "Customize pattern";
+                back => { root.page = CustomizePage.pattern; }
+            }
+
+            Rectangle { height: 12px; }
+
+            VerticalLayout {
+                spacing: 8px;
+
+                // Inhale and exhale must be at least one second: a rhythm of all
+                // zeros would leave the session with no phase to advance to.
+                StepRow {
+                    label: "1. Inhale";
+                    value: root.inhale;
+                    min: 1;
+                    changed(v) => { root.inhale = v; }
+                }
+                StepRow {
+                    label: "2. Hold";
+                    value: root.hold-inhale;
+                    changed(v) => { root.hold-inhale = v; }
+                }
+                StepRow {
+                    label: "3. Exhale";
+                    value: root.exhale;
+                    min: 1;
+                    changed(v) => { root.exhale = v; }
+                }
+                StepRow {
+                    label: "4. Hold";
+                    value: root.hold-exhale;
+                    changed(v) => { root.hold-exhale = v; }
+                }
+            }
+
+            Rectangle { vertical-stretch: 1; min-height: 0px; }
+        }
+
+        // The scent dispenser has no host port yet. Its pages exist so the
+        // navigation is in place, but every control on them is inert.
+        if root.page == CustomizePage.scent : VerticalLayout {
+            spacing: 0px;
+
+            PageHeader {
+                title: "Scent Dispenser";
+                back => { root.page = CustomizePage.root; }
+            }
+
+            Rectangle { height: 18px; }
+            SectionLabel { text: root.scent-on ? "DISPENSER ON" : "DISPENSER OFF"; }
+            Rectangle { height: 10px; }
+
+            ActionButton {
+                text: "Turn off";
+                primary: false;
+            }
+            Rectangle { height: 12px; }
+            ActionButton {
+                text: "Link";
+                primary: false;
+                clicked => { root.page = CustomizePage.scent-link; }
+            }
+
+            Rectangle { vertical-stretch: 1; min-height: 0px; }
+        }
+
+        if root.page == CustomizePage.scent-link : VerticalLayout {
+            spacing: 0px;
+
+            PageHeader {
+                title: "Link";
+                back => { root.page = CustomizePage.scent; }
+            }
+
+            Rectangle { height: 18px; }
 
             Text {
-                text: "Done";
-                font-size: 14px;
-                font-weight: 600;
-                color: #4facfe;
-                vertical-alignment: center;
-                TouchArea {
-                    clicked => { root.back-clicked(); }
-                }
+                text: "Point the remote of the dispenser at this device and press its ON/OFF button. Once the infrared signal is detected, the Link button becomes active.";
+                wrap: word-wrap;
+                font-size: 15px;
+                color: #8f9bb3;
             }
+
+            Rectangle { height: 18px; }
+
+            ActionButton {
+                text: "Link";
+                // Dimmed: nothing can be linked until the dispenser port exists.
+                opacity: 0.4;
+            }
+
+            Rectangle { vertical-stretch: 1; min-height: 0px; }
         }
-
-        Rectangle { height: 14px; }
-
-        SectionLabel { text: "SCENT DEVICE"; }
-        Rectangle { height: 6px; }
-
-        // Scent device card
-        Rectangle {
-            height: 60px;
-            border-radius: 14px;
-            background: #ffffff0a;
-            border-width: 1px;
-            border-color: root.scent-connected ? #69f0ae55 : #ffffff14;
-
-            HorizontalLayout {
-                padding-left: 12px;
-                padding-right: 12px;
-                spacing: 12px;
-                alignment: center;
-
-                Rectangle {
-                    width: 40px;
-                    height: 40px;
-                    border-radius: 12px;
-                    background: #4facfe;
-                    opacity: root.scent-connected ? 1 : 0.4;
-
-                    Rectangle {
-                        width: 14px;
-                        height: 14px;
-                        x: (parent.width - self.width) / 2;
-                        y: (parent.height - self.height) / 2;
-                        border-radius: 7px;
-                        background: #0d0d12;
-                    }
-                }
-
-                VerticalLayout {
-                    horizontal-stretch: 1;
-                    spacing: 1px;
-                    alignment: center;
-
-                    Text {
-                        text: "Scent One";
-                        font-size: 14px;
-                        font-weight: 600;
-                        color: #ffffff;
-                    }
-                    Text {
-                        text: root.scent-connected ? "Connected  ·  Lavender" : "No device paired";
-                        font-size: 11px;
-                        color: #8f9bb3;
-                    }
-                }
-
-                Rectangle {
-                    width: 84px;
-                    height: 30px;
-                    border-radius: 15px;
-                    background: root.scent-connected ? #69f0ae22 : #4facfe22;
-                    border-width: 1px;
-                    border-color: root.scent-connected ? #69f0ae55 : #4facfe55;
-
-                    Text {
-                        text: root.scent-connected ? "Connected" : "Pair";
-                        font-size: 11px;
-                        font-weight: 600;
-                        color: root.scent-connected ? #69f0ae : #4facfe;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-            }
-
-            TouchArea {
-                clicked => { root.scent-toggled(); }
-            }
-        }
-
-        Rectangle { height: 14px; }
-
-        SectionLabel { text: "BREATHING PATTERN"; }
-        Rectangle { height: 6px; }
-
-        VerticalLayout {
-            spacing: 6px;
-            for p[i] in root.patterns : PatternRow {
-                index: i;
-                title: p.name;
-                hint: p.hint;
-                numbers: root.pattern-numbers(i);
-                accent: p.accent;
-                selected: i == root.selected-pattern;
-                picked(idx) => { root.selected-pattern = idx; }
-            }
-        }
-
-        Rectangle { height: 14px; }
-
-        SectionLabel { text: "DURATION"; }
-        Rectangle { height: 6px; }
-
-        HorizontalLayout {
-            height: 44px;
-            spacing: 8px;
-            for d in root.durations : DurationChip {
-                horizontal-stretch: 1;
-                minutes: d;
-                selected: d == root.selected-duration;
-                picked(m) => { root.selected-duration = m; }
-            }
-        }
-
-        // Pushes the previous content to the top if there is spare space.
-        Rectangle { vertical-stretch: 1; min-height: 0px; }
-    }
-
-    pure function pattern-numbers(i: int) -> string {
-        return root.patterns[i].inhale + "-" + root.patterns[i].hold1 + "-"
-            + root.patterns[i].exhale + "-" + root.patterns[i].hold2;
     }
 }
 
@@ -675,23 +840,42 @@ export component MainWindow inherits Window {
 
     // Host port: fired on every phase change and once when the session ends.
     callback play-sound(Sound);
+    // Host port: fired whenever a persisted setting changes, including when the
+    // host applies settings loaded at startup.
+    callback settings-changed(Settings);
 
     // Host entry point: start straight into a session from outside the UI.
     public function start-session-now() {
         root.start-session();
     }
 
-    property <[BreathPattern]> patterns: [
-        { name: "Awake", hint: "Morning energy", inhale: 6, hold1: 0, exhale: 2, hold2: 0, accent: #fce38a },
-        { name: "Deep Calm", hint: "Stress relief", inhale: 4, hold1: 7, exhale: 8, hold2: 0, accent: #4facfe },
-        { name: "Box", hint: "Steady focus", inhale: 4, hold1: 4, exhale: 4, hold2: 4, accent: #69f0ae },
-    ];
-    property <[int]> durations: [5, 10, 15, 20];
+    // Host entry point: pick a preset by index. Out-of-range indices are
+    // ignored so a stale stored value cannot produce a bad rhythm.
+    public function select-pattern(index: int) {
+        if index < 0 || index >= root.patterns.length {
+            return;
+        }
+        root.inhale = root.patterns[index].inhale;
+        root.hold-inhale = root.patterns[index].hold-inhale;
+        root.exhale = root.patterns[index].exhale;
+        root.hold-exhale = root.patterns[index].hold-exhale;
+    }
 
-    // Public so a host can preset a session (e.g. a hardware shortcut button).
-    in-out property <int> selected-pattern: 0;
-    in-out property <int> selected-duration: 10;
-    property <bool> scent-connected: false;
+    // Reference rhythms. None of them is selected state: picking one copies its
+    // numbers into the settings below.
+    property <[BreathPattern]> patterns: [
+        { name: "Awake", hint: "Morning energy", inhale: 6, hold-inhale: 0, exhale: 2, hold-exhale: 0, accent: #fce38a },
+        { name: "Deep Calm", hint: "Stress relief", inhale: 4, hold-inhale: 7, exhale: 8, hold-exhale: 0, accent: #4facfe },
+        { name: "Box", hint: "Steady focus", inhale: 4, hold-inhale: 4, exhale: 4, hold-exhale: 4, accent: #69f0ae },
+    ];
+
+    // The persisted settings. Defaults are the "Awake" rhythm.
+    in-out property <int> minutes: 10;
+    in-out property <int> inhale: 6;
+    in-out property <int> hold-inhale: 0;
+    in-out property <int> exhale: 2;
+    in-out property <int> hold-exhale: 0;
+    in-out property <bool> scent-on: false;
 
     // Session state
     property <int> phase: 0;
@@ -703,16 +887,48 @@ export component MainWindow inherits Window {
     property <bool> arming: false;
     property <length> ring-size: 150px;
 
+    // Index of the preset whose numbers equal the settings, or -1 when custom.
+    pure function preset-index() -> int {
+        if root.patterns[0].inhale == root.inhale
+            && root.patterns[0].hold-inhale == root.hold-inhale
+            && root.patterns[0].exhale == root.exhale
+            && root.patterns[0].hold-exhale == root.hold-exhale {
+            return 0;
+        }
+        if root.patterns[1].inhale == root.inhale
+            && root.patterns[1].hold-inhale == root.hold-inhale
+            && root.patterns[1].exhale == root.exhale
+            && root.patterns[1].hold-exhale == root.hold-exhale {
+            return 1;
+        }
+        if root.patterns[2].inhale == root.inhale
+            && root.patterns[2].hold-inhale == root.hold-inhale
+            && root.patterns[2].exhale == root.exhale
+            && root.patterns[2].hold-exhale == root.hold-exhale {
+            return 2;
+        }
+        return -1;
+    }
+
+    pure function preset-name() -> string {
+        return root.preset-index() < 0 ? "Custom" : root.patterns[root.preset-index()].name;
+    }
+
+    // "6-0-2-0": inhale-hold-exhale-hold.
+    pure function rhythm() -> string {
+        return root.inhale + "-" + root.hold-inhale + "-" + root.exhale + "-" + root.hold-exhale;
+    }
+
     // The ring size that the current phase animates towards.
     pure function phase-target(ph: int) -> length {
         return ph == 0 || ph == 1 ? 238px : 150px;
     }
 
     pure function phase-duration(ph: int) -> int {
-        if ph == 0 { return root.patterns[root.selected-pattern].inhale; }
-        if ph == 1 { return root.patterns[root.selected-pattern].hold1; }
-        if ph == 2 { return root.patterns[root.selected-pattern].exhale; }
-        return root.patterns[root.selected-pattern].hold2;
+        if ph == 0 { return root.inhale; }
+        if ph == 1 { return root.hold-inhale; }
+        if ph == 2 { return root.exhale; }
+        return root.hold-exhale;
     }
 
     pure function phase-label(ph: int) -> string {
@@ -769,7 +985,7 @@ export component MainWindow inherits Window {
         root.running = true;
         root.phase = 0;
         root.phase-seconds = root.phase-duration(0);
-        root.remaining = root.selected-duration * 60;
+        root.remaining = root.minutes * 60;
         root.session-total = root.remaining;
         root.ring-size = 150px;
         root.arming = true;
@@ -799,6 +1015,40 @@ export component MainWindow inherits Window {
         }
     }
 
+    // Hand the current settings to the host.
+    function persist() {
+        root.settings-changed({
+            minutes: root.minutes,
+            inhale: root.inhale,
+            hold-inhale: root.hold-inhale,
+            exhale: root.exhale,
+            hold-exhale: root.hold-exhale,
+            scent-on: root.scent-on,
+        });
+    }
+
+    // Set by any persisted change, cleared by the timer below. Saving one turn
+    // later coalesces actions that touch several fields (picking a preset
+    // rewrites all four steps) into a single save, which matters for a flash
+    // store.
+    property <bool> settings-dirty: false;
+
+    Timer {
+        interval: 1ms;
+        running: root.settings-dirty;
+        triggered() => {
+            root.settings-dirty = false;
+            root.persist();
+        }
+    }
+
+    changed minutes => { root.settings-dirty = true; }
+    changed inhale => { root.settings-dirty = true; }
+    changed hold-inhale => { root.settings-dirty = true; }
+    changed exhale => { root.settings-dirty = true; }
+    changed hold-exhale => { root.settings-dirty = true; }
+    changed scent-on => { root.settings-dirty = true; }
+
     // One tick per second while a session is running.
     Timer {
         interval: 1s;
@@ -822,14 +1072,14 @@ export component MainWindow inherits Window {
     }
 
     if root.screen == Screen.start : StartScreen {
-        pattern-name: root.patterns[root.selected-pattern].name;
-        pattern-numbers: root.pattern-numbers(root.patterns[root.selected-pattern]);
+        pattern-name: root.preset-name();
+        pattern-numbers: root.rhythm();
         start-clicked => { root.start-session(); }
         customize-clicked => { root.screen = Screen.customize; }
     }
 
     if root.screen == Screen.session : SessionScreen {
-        pattern-name: root.patterns[root.selected-pattern].name;
+        pattern-name: root.preset-name();
         remaining: root.remaining;
         total: root.session-total;
         phase: root.phase;
@@ -843,17 +1093,15 @@ export component MainWindow inherits Window {
     }
 
     if root.screen == Screen.customize : CustomizeScreen {
-        selected-pattern <=> root.selected-pattern;
-        selected-duration <=> root.selected-duration;
+        minutes <=> root.minutes;
+        inhale <=> root.inhale;
+        hold-inhale <=> root.hold-inhale;
+        exhale <=> root.exhale;
+        hold-exhale <=> root.hold-exhale;
         patterns: root.patterns;
-        durations: root.durations;
-        scent-connected <=> root.scent-connected;
+        scent-on <=> root.scent-on;
+        matched-pattern: root.preset-index();
+        preset-name: root.preset-name();
         back-clicked => { root.screen = Screen.start; }
-        scent-toggled => { root.scent-connected = !root.scent-connected; }
-    }
-
-    // "6-0-2-0": inhale-hold-exhale-hold.
-    pure function pattern-numbers(p: BreathPattern) -> string {
-        return p.inhale + "-" + p.hold1 + "-" + p.exhale + "-" + p.hold2;
     }
 }

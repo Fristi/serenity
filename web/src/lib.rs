@@ -6,7 +6,7 @@
 
 #[cfg_attr(target_family = "wasm", wasm_bindgen::prelude::wasm_bindgen(start))]
 pub fn main() -> Result<(), String> {
-    ui::App::new(ui::NoopSink)
+    ui::App::new(ui::NoopSink, ui::NoopStore)
         .and_then(|app| app.run())
         .map_err(|e| format!("{e}"))
 }
