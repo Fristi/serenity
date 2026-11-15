@@ -15,6 +15,13 @@ need a flash cycle.
 `ui` re-exports Slint as `ui::slint`; hosts must not depend on `slint` directly,
 because the feature set differs per target.
 
+`firmware` is a separate Cargo workspace (root `Cargo.toml` has
+`exclude = ["firmware"]`, and `firmware/Cargo.toml` declares its own
+`[workspace]`). Cargo only reads `.cargo/config.toml` from the workspace root,
+and rust-analyzer only gets one config per workspace, so this is what lets the
+ESP32 target and `build-std` apply to the firmware alone. `ui` and `web` stay in
+the root workspace on the host target.
+
 ## Run in the browser
 
 ```sh
@@ -39,8 +46,8 @@ cargo run --release
 The `espflash` runner from `firmware/.cargo/config.toml` flashes and opens a
 defmt monitor (`DEFMT_LOG=info`). Build from `firmware/` so Cargo picks up that
 config: it holds the `riscv32imac-unknown-none-elf` target and
-`build-std = ["alloc", "core"]`. The `cargo esp` alias at the repo root sets the
-target but not `build-std`, so it fails to find `core`; use the directory.
+`build-std = ["alloc", "core"]`. From the repo root, `cargo esp` passes the same
+file explicitly (`--config firmware/.cargo/config.toml`).
 
 Needs `espflash` and an ESP32-C6 in bootloader mode.
 
@@ -52,7 +59,9 @@ cargo test -p ui
 
 Host tests live in `ui/tests/`; they drive the real component through a headless
 `MinimalSoftwareWindow` plus a mock clock. `cargo test` for `firmware` cannot run
-at all, since `build-std` has no `test` crate.
+at all, since `build-std` has no `test` crate. Because `firmware` is its own
+workspace, run its commands from `firmware/`; the `-p firmware` selector no
+longer resolves from the repo root.
 
 ## Running in this sandbox
 

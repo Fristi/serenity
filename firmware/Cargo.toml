@@ -4,6 +4,12 @@ name         = "firmware"
 # rust-version = "1.88"
 version      = "0.1.0"
 
+# Standalone workspace: Cargo reads `.cargo/config.toml` per workspace root,
+# and this crate needs its own (target + build-std). It is `exclude`d from the
+# repo-root workspace for the same reason, so rust-analyzer can load it with
+# the ESP32 target while `ui`/`web` stay on the host target.
+[workspace]
+
 [[bin]]
 name = "display-co5300-test"
 path = "./src/main.rs"
@@ -61,3 +67,21 @@ cst92xx = { version = "0.2.4", default-features = false, features = [
 embedded-alloc = { version = "0.5" }
 bytemuck = { version = "1.15.0", features = ["derive"] }
 embassy-futures = "0.1.2"
+
+# firmware is its own workspace, so it needs the root's profiles copied here.
+[profile.dev]
+codegen-units = 1
+debug = 2
+debug-assertions = true
+incremental = false
+opt-level = "z"
+overflow-checks = true
+
+[profile.release]
+codegen-units = 1
+debug = 2
+debug-assertions = false
+incremental = false
+lto = "fat"
+opt-level = "z"
+overflow-checks = false

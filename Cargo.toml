@@ -1,5 +1,10 @@
 [workspace]
-members = ["ui", "firmware", "web"]
+members = ["ui", "web"]
+# firmware is its own workspace: it has a different target and needs
+# build-std, and `.cargo/config.toml` is read per workspace root (cwd), not
+# per member. Keeping it out lets rust-analyzer load it as a separate project
+# with the right target. Build it from firmware/ (or use `cargo esp`).
+exclude = ["firmware"]
 resolver = "2"
 
 # Profiles must live at the workspace root; the members inherit them.

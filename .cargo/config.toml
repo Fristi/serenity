@@ -6,7 +6,8 @@
 DEFMT_LOG = "info"
 
 [alias]
-# Firmware must be built from its own directory so Cargo picks up
-# firmware/.cargo/config.toml (target + build-std are not workspace-wide).
-esp = "build --manifest-path firmware/Cargo.toml --target riscv32imac-unknown-none-elf"
+# firmware is a separate workspace; Cargo only reads `.cargo/config.toml` from
+# the workspace root (cwd), so pass firmware's config explicitly to get the
+# target and build-std. Equivalent to `cd firmware && cargo build`.
+esp = "build --manifest-path firmware/Cargo.toml --config firmware/.cargo/config.toml"
 web = "build --manifest-path web/Cargo.toml --target wasm32-unknown-unknown"
