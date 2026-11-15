@@ -68,7 +68,7 @@ component ActionButton inherits Rectangle {
     }
 
     opacity: ta.pressed ? 0.75 : 1;
-    animate opacity { duration: 120ms; }
+    // animate opacity { duration: 120ms; }
 }
 
 component CloseButton inherits Rectangle {
@@ -95,7 +95,7 @@ component CloseButton inherits Rectangle {
     }
 
     opacity: ta.pressed ? 0.6 : 1;
-    animate opacity { duration: 120ms; }
+    // animate opacity { duration: 120ms; }
 }
 
 component PatternRow inherits Rectangle {
@@ -118,7 +118,7 @@ component PatternRow inherits Rectangle {
         background: root.accent;
         opacity: root.selected ? 0.14 : 0;
         border-radius: parent.border-radius;
-        animate opacity { duration: 150ms; }
+        // animate opacity { duration: 150ms; }
     }
 
     HorizontalLayout {
@@ -169,7 +169,7 @@ component PatternRow inherits Rectangle {
                 border-radius: 4px;
                 background: root.accent;
                 opacity: root.selected ? 1 : 0;
-                animate opacity { duration: 150ms; }
+                // animate opacity { duration: 150ms; }
             }
         }
     }
@@ -203,7 +203,7 @@ component DurationChip inherits Rectangle {
         clicked => { root.picked(root.minutes); }
     }
     opacity: ta.pressed ? 0.75 : 1;
-    animate opacity { duration: 120ms; }
+    // animate opacity { duration: 120ms; }
 }
 
 // ---------------------------------------------------------------------------
@@ -218,7 +218,7 @@ component StartScreen inherits Rectangle {
 
     property <bool> breathe: false;
     property <length> hero-size: root.breathe ? 196px : 156px;
-    animate hero-size { duration: 4000ms; easing: ease-in-out; }
+    // animate hero-size { duration: 4000ms; easing: ease-in-out; }
 
     Timer {
         interval: 4s;
@@ -386,7 +386,7 @@ component SessionScreen inherits Rectangle {
                 height: parent.height;
                 border-radius: parent.border-radius;
                 background: #4facfe;
-                animate width { duration: 300ms; }
+                // animate width { duration: 300ms; }
             }
         }
 
@@ -413,8 +413,8 @@ component SessionScreen inherits Rectangle {
                 border-radius: self.width / 2;
                 opacity: 0.20;
                 background: #4facfe;
-                animate width { duration: root.anim-duration; easing: ease-in-out; }
-                animate height { duration: root.anim-duration; easing: ease-in-out; }
+                // animate width { duration: root.anim-duration; easing: ease-in-out; }
+                // animate height { duration: root.anim-duration; easing: ease-in-out; }
 
                 Rectangle {
                     width: parent.width - 26px;
