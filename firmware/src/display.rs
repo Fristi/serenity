@@ -97,7 +97,7 @@ pub async fn init(
     dma: DMA_CH0<'static>,
     delay: &mut impl DelayNs,
 ) -> anyhow::Result<BoardDisplay> {
-    let (dma_rx_buf, dma_tx_buf) = dma_buffers();
+    let (dma_rx_buf, dma_tx_buf) = dma_buffers()?;
 
     let cs = Output::new(pins.cs, Level::High, OutputConfig::default());
     let spi = Spi::new(
@@ -117,7 +117,7 @@ pub async fn init(
     .with_buffers(dma_rx_buf, dma_tx_buf)
     .into_async();
 
-    let device = EspHalQspiDevice { spi: Some(spi) };
+    let device = EspHalQspiDevice { spi };
 
     // Default QspiConfig: cmd_data_mode=Single, ram_data_mode=Quad (1-1-4)
     let bus = QspiDisplayBus::new(device, QspiConfig::default());

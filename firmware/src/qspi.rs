@@ -19,7 +19,7 @@ const DMA_BUF_SIZE: usize = 32736;
 /// Wraps an esp-hal `SpiDma<Async>` to implement the [`QspiDevice`] trait
 /// required by `QspiDisplayBus`.
 pub struct EspHalQspiDevice<'d> {
-    pub spi: Option<SpiDma<'d, esp_hal::Async>>,
+    pub spi: SpiDma<'d, esp_hal::Async>,
 }
 
 impl<'d> QspiDevice for EspHalQspiDevice<'d> {
@@ -35,8 +35,6 @@ impl<'d> QspiDevice for EspHalQspiDevice<'d> {
         let data_mode = to_esp_data_mode(transaction.data_mode);
 
         self.spi
-            .as_mut()
-            .unwrap()
             .half_duplex_write_async(
                 data_mode,
                 cmd,
@@ -57,8 +55,6 @@ impl<'d> QspiDevice for EspHalQspiDevice<'d> {
         let data_mode = to_esp_data_mode(transaction.data_mode);
 
         self.spi
-            .as_mut()
-            .unwrap()
             .half_duplex_read_async(
                 data_mode,
                 cmd,
@@ -71,10 +67,12 @@ impl<'d> QspiDevice for EspHalQspiDevice<'d> {
 }
 
 /// Create the DMA copy buffers the slice-based API copies through.
-pub fn dma_buffers() -> (esp_hal::dma::DmaRxBuf, esp_hal::dma::DmaTxBuf) {
-    let rx = esp_hal::dma_rx_buffer!(DMA_BUF_SIZE).unwrap();
-    let tx = esp_hal::dma_tx_buffer!(DMA_BUF_SIZE).unwrap();
-    (rx, tx)
+pub fn dma_buffers() -> anyhow::Result<(esp_hal::dma::DmaRxBuf, esp_hal::dma::DmaTxBuf)> {
+    let rx = esp_hal::dma_rx_buffer!(DMA_BUF_SIZE)
+        .map_err(|e| anyhow::anyhow!("DMA RX buffer alloc failed: {e}"))?;
+    let tx = esp_hal::dma_tx_buffer!(DMA_BUF_SIZE)
+        .map_err(|e| anyhow::anyhow!("DMA TX buffer alloc failed: {e}"))?;
+    Ok((rx, tx))
 }
 
 // ---------------------------------------------------------------------------
@@ -97,7 +95,6 @@ fn to_esp_command(phase: &Option<PhaseConfig>) -> Command {
         Some(cfg) => {
             let mode = to_esp_data_mode(cfg.mode);
             match cfg.bytes_len {
-                1 => Command::_8Bit(cfg.value as u16, mode),
                 2 => Command::_16Bit(cfg.value as u16, mode),
                 _ => Command::_8Bit(cfg.value as u16, mode),
             }
@@ -114,7 +111,6 @@ fn to_esp_address(phase: &Option<PhaseConfig>) -> Address {
             match cfg.bytes_len {
                 1 => Address::_8Bit(cfg.value, mode),
                 2 => Address::_16Bit(cfg.value, mode),
-                3 => Address::_24Bit(cfg.value, mode),
                 4 => Address::_32Bit(cfg.value, mode),
                 _ => Address::_24Bit(cfg.value, mode),
             }

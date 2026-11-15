@@ -16,11 +16,12 @@
 
 use core::cell::RefCell;
 
-use defmt::{info, warn};
+use anyhow::anyhow;
+use defmt::{Debug2Format, error, info, warn};
 use embassy_time::{Duration, Timer};
 use esp_hal::{
     dma::{DmaTxStreamBuf, DmaTxStreamBufView},
-    i2s::master::{Channels, DataFormat, I2s, I2sTx, TdmConfig},
+    i2s::master::{Channels, DataFormat, I2s, I2sTx, I2sTxDmaTransfer, TdmConfig},
     peripherals::{DMA_CH1, GPIO19, GPIO20, GPIO22, GPIO23, I2S0},
     time::Rate,
     Blocking,
@@ -158,9 +159,27 @@ fn new_stream() -> DmaTxStreamBuf {
 /// of the ring, so a re-arm would otherwise replay the previous lap instead of
 /// picking up the session where it left off. Rebuilding the buffer resets that
 /// cursor.
-fn reuse_stream(buf: DmaTxStreamBuf) -> DmaTxStreamBuf {
+fn reuse_stream(buf: DmaTxStreamBuf) -> anyhow::Result<DmaTxStreamBuf> {
     let (descriptors, buffer) = buf.split();
-    DmaTxStreamBuf::new(descriptors, buffer).expect("same descriptors and buffer as before")
+    DmaTxStreamBuf::new(descriptors, buffer)
+        .map_err(|e| anyhow!("I2S stream buffer re-arm failed: {e}"))
+}
+
+type Transfer = I2sTxDmaTransfer<'static, Blocking, DmaTxStreamBuf>;
+
+/// What the playback task holds between iterations.
+///
+/// The `I2sTx` and its buffer only exist while no transfer is running, and the
+/// transfer only exists while one is: one enum keeps that exclusive state
+/// together instead of two `Option`s that have to be `unwrap()`ed.
+enum Engine {
+    /// Ready to arm.
+    Idle {
+        tx: I2sTx<'static, Blocking>,
+        buf: DmaTxStreamBuf,
+    },
+    /// Streaming.
+    Running(Transfer),
 }
 
 /// Keeps the I2S stream fed for the duration of each cue.
@@ -185,9 +204,10 @@ fn reuse_stream(buf: DmaTxStreamBuf) -> DmaTxStreamBuf {
 #[embassy_executor::task]
 pub async fn playback_task(i2s_tx: I2sTx<'static, Blocking>) {
     let mut session = Session::idle();
-    let mut tx = Some(i2s_tx);
-    let mut buf = Some(new_stream());
-    let mut xfer = None;
+    let mut engine = Engine::Idle {
+        tx: i2s_tx,
+        buf: new_stream(),
+    };
 
     loop {
         // A new cue replaces the one in flight.
@@ -195,44 +215,52 @@ pub async fn playback_task(i2s_tx: I2sTx<'static, Blocking>) {
             session.begin(clip_for(sound));
         }
 
-        // (Re-)arm: the DMA needs a full first descriptor before it starts.
-        if xfer.is_none() {
-            let mut stream = buf.take().unwrap();
-            // Seed everything the DMA will read on this lap, so a cue playing
-            // now is heard immediately instead of after the ring drains.
-            session.fill_stream(&mut stream);
-            match tx.take().unwrap().write(stream) {
-                Ok(started) => xfer = Some(started),
-                Err((e, returned_tx, returned_buf)) => {
-                    warn!("I2S start failed: {:?}", e);
-                    tx = Some(returned_tx);
-                    buf = Some(returned_buf);
-                    Timer::after(IDLE_POLL).await;
-                    continue;
+        match engine {
+            // (Re-)arm: the DMA needs a full first descriptor before it starts.
+            Engine::Idle { tx, mut buf } => {
+                // Seed everything the DMA will read on this lap, so a cue
+                // playing now is heard immediately instead of after the ring
+                // drains.
+                session.fill_stream(&mut buf);
+
+                match tx.write(buf) {
+                    Ok(xfer) => engine = Engine::Running(xfer),
+                    Err((e, tx, buf)) => {
+                        warn!("I2S start failed: {:?}", e);
+                        engine = Engine::Idle { tx, buf };
+                        Timer::after(IDLE_POLL).await;
+                    }
+                }
+            }
+            Engine::Running(mut xfer) => {
+                if feed(&mut xfer, &mut session) {
+                    warn!("I2S DMA stalled, re-arming");
+                    let (tx, buf) = xfer.stop();
+                    engine = match reuse_stream(buf) {
+                        Ok(buf) => Engine::Idle { tx, buf },
+                        Err(err) => {
+                            error!("I2S re-arm failed: {:?}", Debug2Format(&err));
+                            return;
+                        }
+                    };
+                } else {
+                    Timer::after(if session.is_idle() { IDLE_POLL } else { POLL }).await;
+                    engine = Engine::Running(xfer);
                 }
             }
         }
-
-        let stalled = {
-            let active = xfer.as_mut().unwrap();
-            while active.available_bytes() > 0 {
-                // Deref to the transfer's buffer view: the transfer itself is
-                // not a sink.
-                session.fill_stream(&mut **active);
-            }
-            active.is_done()
-        };
-
-        if stalled {
-            warn!("I2S DMA stalled, re-arming");
-            let (returned_tx, returned_buf) = xfer.take().unwrap().stop();
-            tx = Some(returned_tx);
-            buf = Some(reuse_stream(returned_buf));
-            continue;
-        }
-
-        Timer::after(if session.is_idle() { IDLE_POLL } else { POLL }).await;
     }
+}
+
+/// Top the running transfer up until the DMA has drained one descriptor, then
+/// report whether it ran dry.
+fn feed(xfer: &mut Transfer, session: &mut Session) -> bool {
+    while xfer.available_bytes() > 0 {
+        // Deref to the transfer's buffer view: the transfer itself is not a
+        // sink.
+        session.fill_stream(&mut **xfer);
+    }
+    xfer.is_done()
 }
 
 /// The parts of a stream buffer the session needs: room to write into, and a
@@ -311,7 +339,7 @@ impl Session {
     fn write(&mut self, out: &mut [u8], count_scrub: bool) {
         let mut silence = 0;
 
-        for frame in out.chunks_exact_mut(4) {
+        for frame in out.as_chunks_mut::<4>().0 {
             let sample = match self.clip {
                 Some(pcm) if self.pos + 2 <= pcm.len() => {
                     let sample = [pcm[self.pos], pcm[self.pos + 1]];

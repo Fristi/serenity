@@ -59,8 +59,10 @@ impl<I: I2c> Es8311<I> {
 
         self.write(0x03, 0x10)?; // fs_mode = 0, adc_osr = 0x10
         self.write(0x04, 0x10)?; // dac_osr
-        #[allow(clippy::eq_op, reason = "mirrors the vendor (div - 1) form")]
-        self.write(0x05, ((1 - 1) << 4) | (1 - 1))?; // adc_div = dac_div = 1
+        // adc_div = dac_div = 1, written as the vendor's (div - 1) fields.
+        let adc_div = 1u8;
+        let dac_div = 1u8;
+        self.write(0x05, ((adc_div - 1) << 4) | (dac_div - 1))?;
 
         // bclk_div = 4
         let reg06 = (self.read(0x06).unwrap_or(0) & 0xE0) | (4 - 1);

@@ -12,6 +12,7 @@ rustflags = [
 ]
 
 target = "riscv32imac-unknown-none-elf"
+warnings = "deny"
 
 [unstable]
 build-std = ["alloc", "core"]

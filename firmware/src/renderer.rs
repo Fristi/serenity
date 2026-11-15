@@ -83,7 +83,7 @@ impl<B: DisplayBus, P: Panel<B>> LineBufferProvider for DisplayWrapper<'_, Displ
     ) {
         let width = range.len();
 
-        if line % 2 == 0 {
+        if line.is_multiple_of(2) {
             // --- Handling Even Line ---
 
             // Check if we are overwriting a previous even line that never got its odd pair

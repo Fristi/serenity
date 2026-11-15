@@ -11,8 +11,6 @@ const REG_STATUS2: u8 = 0x01;
 const REG_IC_TYPE: u8 = 0x03;
 const REG_VBAT_H: u8 = 0x34;
 const REG_VBAT_L: u8 = 0x35;
-const REG_TS_H: u8 = 0x36;
-const REG_TS_L: u8 = 0x37;
 const REG_VBUS_H: u8 = 0x38;
 const REG_VBUS_L: u8 = 0x39;
 const REG_VSYS_H: u8 = 0x3A;
@@ -25,12 +23,6 @@ const REG_LDO_VOL0: u8 = 0x92;     // ALDO1 voltage setting
 const REG_LDO_VOL1: u8 = 0x93; // ALDO2 voltage setting
 const REG_LDO_VOL2: u8 = 0x94; // ALDO2 voltage setting
 const REG_ADC_ENABLE: u8 = 0x30;
-const REG_IRQ_ENABLE0: u8 = 0x40;
-const REG_IRQ_ENABLE1: u8 = 0x41;
-const REG_IRQ_ENABLE2: u8 = 0x42;
-const REG_IRQ_STATUS0: u8 = 0x48;
-const REG_IRQ_STATUS1: u8 = 0x49;
-const REG_IRQ_STATUS2: u8 = 0x4A;
 const REG_BAT_PERCENT: u8 = 0xA4;
 const REG_CHG_STATUS: u8 = 0x01;
 
@@ -76,17 +68,6 @@ impl<I: I2c> Axp2101Power<I> {
 
         // === Disable unused rails (save power) ===
         // (Skip for now - don't touch what's already configured by bootloader)
-
-        // === IRQ setup ===
-        // self.write_reg(REG_IRQ_ENABLE0, 0x00)?;
-        // self.write_reg(REG_IRQ_ENABLE1, 0x00)?;
-        // self.write_reg(REG_IRQ_ENABLE2, 0x00)?;
-        // self.write_reg(REG_IRQ_STATUS0, 0xFF)?;
-        // self.write_reg(REG_IRQ_STATUS1, 0xFF)?;
-        // self.write_reg(REG_IRQ_STATUS2, 0xFF)?;
-
-        // // === Enable ADC ===
-        // self.write_reg(REG_ADC_ENABLE, 0b00011101)?;
 
         Ok(())
     }
@@ -135,7 +116,7 @@ impl<I: I2c> Axp2101Power<I> {
         let status = self.read_reg(REG_CHG_STATUS)?;
         // Bits [7:5] = charger status, 001/010/011 = charging
         let chg = (status >> 5) & 0x07;
-        Ok(chg >= 1 && chg <= 3)
+        Ok((1..=3).contains(&chg))
     }
 
     /// Check if VBUS (USB) is connected.

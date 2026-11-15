@@ -64,8 +64,11 @@ fn linker_be_nice() {
         std::process::exit(0);
     }
 
-    println!(
-        "cargo:rustc-link-arg=--error-handling-script={}",
-        std::env::current_exe().unwrap().display()
-    );
+    if let Ok(path) = std::env::current_exe() {
+        println!(
+            "cargo:rustc-link-arg=--error-handling-script={}",
+            path.display()
+        );        
+    }
+
 }
