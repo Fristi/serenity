@@ -1,7 +1,7 @@
 //! Panel bring-up for the Waveshare ESP32-C6-Touch-AMOLED-2.16.
 //!
-//! Owns the QSPI wiring, the CO5300 panel spec and the static DMA buffers
-//! that `EspHalQspiDevice` borrows for the lifetime of the program.
+//! Owns the QSPI wiring, the CO5300 panel spec and the DMA copy buffers the
+//! slice-based spi driver transfers through.
 
 use core::cell::RefCell;
 
@@ -18,7 +18,6 @@ use embassy_time::{Delay, Duration, Timer};
 use embedded_hal_async::delay::DelayNs;
 use embedded_hal_bus::i2c::RefCellDevice;
 use esp_hal::{
-    dma::{DmaDescriptor, DmaRxBuf},
     gpio::{Level, Output, OutputConfig},
     i2c::master::I2c,
     peripherals::{DMA_CH0, GPIO0, GPIO1, GPIO2, GPIO3, GPIO4, GPIO15, SPI2},
@@ -26,10 +25,9 @@ use esp_hal::{
     time::Rate,
     Blocking,
 };
-use static_cell::StaticCell;
 
 use crate::axp2101::Axp2101Power;
-use crate::qspi::EspHalQspiDevice;
+use crate::qspi::{dma_buffers, EspHalQspiDevice};
 
 /// Waveshare ESP32-C6-Touch-AMOLED-2.16 panel: 480x480 CO5300 AMOLED.
 ///
@@ -65,14 +63,6 @@ pub type BoardDisplay = DisplayDriver<
     Co5300<WaveshareAmoled480x480, NoResetPin, QspiDisplayBus<EspHalQspiDevice<'static>>>,
 >;
 
-/// Bounce buffer for init commands, which live in flash and must be copied
-/// to DRAM before the DMA engine can read them.
-const BOUNCE_BUF_SIZE: usize = 57600;
-const DMA_TX_DESCRIPTORS: usize = 8;
-
-static TX_DESCRIPTORS: StaticCell<[DmaDescriptor; DMA_TX_DESCRIPTORS]> = StaticCell::new();
-static BOUNCE_BUF: StaticCell<[u8; BOUNCE_BUF_SIZE]> = StaticCell::new();
-
 /// Power-cycle the panel rail (ALDO3).
 ///
 /// The 2.16 board has no LCD reset pin: Waveshare resets the panel by
@@ -107,12 +97,7 @@ pub async fn init(
     dma: DMA_CH0<'static>,
     delay: &mut impl DelayNs,
 ) -> anyhow::Result<BoardDisplay> {
-    let (rx_buffer, rx_descriptors, _, _) = esp_hal::dma_buffers!(4096, 0);
-    let dma_rx_buf = DmaRxBuf::new(rx_descriptors, rx_buffer)
-        .map_err(|e| anyhow!("DMA rx buffer setup failed: {e:?}"))?;
-
-    let tx_descriptors = TX_DESCRIPTORS.init([DmaDescriptor::EMPTY; DMA_TX_DESCRIPTORS]);
-    let bounce_buf = BOUNCE_BUF.init_with(|| [0; BOUNCE_BUF_SIZE]);
+    let (dma_rx_buf, dma_tx_buf) = dma_buffers();
 
     let cs = Output::new(pins.cs, Level::High, OutputConfig::default());
     let spi = Spi::new(
@@ -129,14 +114,10 @@ pub async fn init(
     .with_sio3(pins.sio3)
     .with_cs(cs)
     .with_dma(dma)
+    .with_buffers(dma_rx_buf, dma_tx_buf)
     .into_async();
 
-    let device = EspHalQspiDevice {
-        spi: Some(spi),
-        rx_buf: Some(dma_rx_buf),
-        tx_descriptors: Some(tx_descriptors),
-        bounce_buf: Some(bounce_buf),
-    };
+    let device = EspHalQspiDevice { spi: Some(spi) };
 
     // Default QspiConfig: cmd_data_mode=Single, ram_data_mode=Quad (1-1-4)
     let bus = QspiDisplayBus::new(device, QspiConfig::default());

@@ -14,9 +14,9 @@ path = "./src/main.rs"
 # different renderers. `ui::slint` is the only way the firmware touches Slint.
 ui = { path = "../ui" }
 
-esp-hal = { version = "1.1.1", features = ["defmt", "esp32c6", "unstable", "rt"] }
+esp-hal = { version = "1.2.0", features = ["defmt", "esp32c6", "unstable", "rt"] }
 
-esp-rtos = { version = "0.3.0", features = [
+esp-rtos = { version = "0.4.0", features = [
   "defmt",
   "embassy",
   "esp-alloc",
@@ -24,7 +24,7 @@ esp-rtos = { version = "0.3.0", features = [
 ] }
 
 defmt                  = "1.0.1"
-esp-bootloader-esp-idf = { version = "0.5.0", features = ["defmt", "esp32c6"] }
+esp-bootloader-esp-idf = { version = "0.6.0", features = ["defmt", "esp32c6"] }
 
 # no_std (alloc-only) error propagation for the boot path.
 anyhow = { version = "1.0", default-features = false }
@@ -32,12 +32,12 @@ anyhow = { version = "1.0", default-features = false }
 embassy-executor = { version = "0.10.0", features = ["defmt"] }
 embassy-time = { version = "0.5.0", features = ["defmt"] }
 
-esp-backtrace = { version = "0.19.0", features = [
+esp-backtrace = { version = "0.20.0", features = [
   "defmt",
   "esp32c6",
   "panic-handler",
 ] }
-esp-println = { version = "0.17.0", features = ["defmt-espflash", "esp32c6"] }
+esp-println = { version = "0.18.0", features = ["defmt-espflash", "esp32c6"] }
 
 critical-section = "1.2.0"
 static_cell      = "2.1.1"

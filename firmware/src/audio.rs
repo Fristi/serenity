@@ -2,13 +2,14 @@
 //!
 //! The four clips in `firmware/*.pcm` are 16 kHz, 16-bit signed little-endian,
 //! mono, which is exactly the codec's native format. The playback task copies
-//! each sample into both the left and right slots while it tops up a circular
-//! TX ring.
+//! each sample into both the left and right slots while it tops up a
+//! [`DmaTxStreamBuf`], which re-queues each descriptor behind the DMA as it is
+//! drained.
 //!
-//! The ring runs continuously, zeros when idle. This board has no speaker-amp
-//! enable pin, so the only way to keep the speaker quiet is to drive silence
-//! into it: stopping the I2S clock would leave the amp amplifying whatever the
-//! codec holds.
+//! The stream never stops, and is fed zeros when idle. This board has no
+//! speaker-amp enable pin, so the only way to keep the speaker quiet is to
+//! drive silence into it: stopping the I2S clock would leave the amp
+//! amplifying whatever the codec holds.
 //!
 //! A new cue replaces the one in flight (the UI fires cues on phase changes,
 //! so a cue overlapping the previous one would only muddle the transition).
@@ -18,13 +19,12 @@ use core::cell::RefCell;
 use defmt::{info, warn};
 use embassy_time::{Duration, Timer};
 use esp_hal::{
-    dma::{descriptor_count, DmaDescriptor, DmaTransferTxCircular, CHUNK_SIZE},
-    i2s::master::{Channels, Config as I2sConfig, DataFormat, I2s, I2sTx},
+    dma::{DmaTxStreamBuf, DmaTxStreamBufView},
+    i2s::master::{Channels, DataFormat, I2s, I2sTx, TdmConfig},
     peripherals::{DMA_CH1, GPIO19, GPIO20, GPIO22, GPIO23, I2S0},
     time::Rate,
     Blocking,
 };
-use static_cell::StaticCell;
 
 /// Sample rate of every clip, and the rate the codec is configured for.
 pub const SAMPLE_RATE_HZ: u32 = 16_000;
@@ -35,34 +35,26 @@ const EXHALE: &[u8] = include_bytes!("../exhale.pcm");
 const HOLD: &[u8] = include_bytes!("../hold.pcm");
 const BELL: &[u8] = include_bytes!("../bell.pcm");
 
-/// Circular TX ring: six descriptors of [`CHUNK_SIZE`] bytes, ~384 ms of
-/// 16 kHz stereo s16le. Descriptors complete every ~64 ms; the ring has to
+/// Streaming TX ring: 24 KiB of 16 kHz stereo s16le, about 384 ms. It has to
 /// outlast the longest main-loop stall (a full-frame Slint repaint is ~200 ms
 /// and blocks this task, since both share the executor thread).
-const RING_LEN: usize = 6 * CHUNK_SIZE;
-const RING_DESCRIPTORS: usize = descriptor_count(RING_LEN, CHUNK_SIZE, true);
+const RING_LEN: usize = 24 * 1024;
 
-/// How often the task tops the ring up while a clip plays. Must be far below
+/// Per-descriptor chunk size. One descriptor is ~4 KiB (~64 ms of 16 kHz
+/// stereo s16le), so the DMA drains a descriptor every ~64 ms.
+const CHUNK_SIZE: usize = esp_hal::dma::CHUNK_SIZE;
+
+/// How often the task tops the stream up while a clip plays. Must be far below
 /// one descriptor (64 ms) so a running session never runs dry.
 const POLL: Duration = Duration::from_millis(5);
 
-/// How often the idle loop looks for a cue. The transfer is not touched
-/// between sessions, so this costs nothing but a timer wake.
+/// How often the idle loop looks for a cue. The stream still has to be fed
+/// silence, so this stays the same order as [`POLL`].
 const IDLE_POLL: Duration = Duration::from_millis(10);
 
 /// Silence pushed after the last clip sample before the session ends: one
 /// whole ring, so no clip bytes survive into the idle lap.
 const SCRUB_BYTES: usize = RING_LEN;
-
-/// Scratch space for one top-up. A multiple of 4 (one stereo frame).
-const STAGE: usize = 1024;
-
-/// DMA buffers must be word aligned even though the driver only moves bytes.
-#[repr(align(4))]
-pub struct Ring(pub [u8; RING_LEN]);
-
-static RING: StaticCell<Ring> = StaticCell::new();
-static TX_DESC: StaticCell<[DmaDescriptor; RING_DESCRIPTORS]> = StaticCell::new();
 
 /// The most recent cue, posted from the UI callback and taken by the task.
 ///
@@ -130,7 +122,7 @@ pub fn start(
     let i2s = I2s::new(
         i2s,
         dma,
-        I2sConfig::new_tdm_philips()
+        TdmConfig::new_tdm_philips()
             .with_sample_rate(Rate::from_hz(SAMPLE_RATE_HZ))
             .with_data_format(DataFormat::Data16Channel16)
             .with_channels(Channels::STEREO),
@@ -143,127 +135,122 @@ pub fn start(
         .with_bclk(pins.bclk)
         .with_ws(pins.ws)
         .with_dout(pins.dout)
-        .build(TX_DESC.init([DmaDescriptor::EMPTY; RING_DESCRIPTORS]));
+        .build();
 
-    let ring = RING.init(Ring([0u8; RING_LEN]));
-    spawner
-        .spawn(playback_task(tx, ring).map_err(|_| anyhow::anyhow!("audio task spawn failed"))?);
+    spawner.spawn(
+        playback_task(tx).map_err(|_| anyhow::anyhow!("audio task spawn failed"))?,
+    );
     Ok(())
 }
 
-/// Keeps the I2S ring fed for the duration of each cue.
+/// The single statically allocated stream buffer.
 ///
-/// # Why idle is hands-off
+/// The `take()` behind the macro may only run once, so the buffer is moved
+/// into the transfer and handed back by [`I2sTxDmaTransfer::stop`] rather than
+/// being rebuilt on every re-arm.
+fn new_stream() -> DmaTxStreamBuf {
+    esp_hal::dma_tx_stream_buffer!(RING_LEN, CHUNK_SIZE)
+}
+
+/// Reset a returned stream buffer for a fresh transfer.
 ///
-/// esp-hal's circular TX state has a one-way trap: the DMA laps the ring in
-/// hardware, and once a whole lap passes with no `push` every descriptor is
-/// CPU-owned, after which `available()` and `push` return
-/// [`DmaError::Late`](esp_hal::dma::DmaError::Late) forever. Polling the
-/// transfer while idle would hit exactly that: this task shares the executor
-/// thread with the render loop, and building or repainting the window blocks
-/// for longer than a lap.
+/// `stop()` hands the buffer back with its pre-fill cursor pointing at the end
+/// of the ring, so a re-arm would otherwise replay the previous lap instead of
+/// picking up the session where it left off. Rebuilding the buffer resets that
+/// cursor.
+fn reuse_stream(buf: DmaTxStreamBuf) -> DmaTxStreamBuf {
+    let (descriptors, buffer) = buf.split();
+    DmaTxStreamBuf::new(descriptors, buffer).expect("same descriptors and buffer as before")
+}
+
+/// Keeps the I2S stream fed for the duration of each cue.
 ///
-/// So the idle path never touches the transfer. The DMA replays the all-zero
-/// ring in hardware, which keeps the I2S clock (and therefore the amp, which
-/// has no enable pin) fed with silence.
+/// # Idle
+///
+/// The stream is never stopped. [`DmaTxStreamBuf`] is not a hardware loop: it
+/// re-queues each descriptor behind the DMA as the DMA releases it, so the
+/// buffer has to be topped up continuously, even while idle. Idle samples are
+/// therefore zeros, which is also what the amp needs: it has no enable pin, so
+/// the only way to keep the speaker quiet is to keep the I2S clock running
+/// with silent samples.
+///
+/// If the executor stalls for longer than one lap (a full-frame Slint repaint
+/// can take ~200 ms) the DMA runs out of descriptors and the stream stops. The
+/// session cursor survives, so re-arming costs a gap rather than the rest of
+/// the cue.
 ///
 /// # Sessions
 ///
-/// A cue opens a session with a fresh transfer: the ring is pre-filled from the
-/// clip before the transfer starts, so the first sample plays immediately
-/// instead of after one empty lap. A `Late` mid-clip means the executor stalled
-/// for longer than the whole ring; the transfer is re-armed and the clip resumes
-/// at its current offset, so a stall costs a gap rather than the rest of the cue.
+/// A cue replaces whatever is in flight.
 #[embassy_executor::task]
-pub async fn playback_task(mut i2s_tx: I2sTx<'static, Blocking>, ring: &'static mut Ring) {
+pub async fn playback_task(i2s_tx: I2sTx<'static, Blocking>) {
     let mut session = Session::idle();
+    let mut tx = Some(i2s_tx);
+    let mut buf = Some(new_stream());
+    let mut xfer = None;
 
     loop {
-        if session.is_idle() {
-            // Idle: arm an all-zero transfer, then leave it untouched until a
-            // cue arrives. The binding must stay alive: dropping it stops the
-            // DMA and with it the clock the amp needs.
-            ring.0.fill(0);
-            let xfer = match i2s_tx.write_dma_circular(&ring.0) {
-                Ok(xfer) => xfer,
-                Err(e) => {
+        // A new cue replaces the one in flight.
+        if let Some(sound) = take_cue() {
+            session.begin(clip_for(sound));
+        }
+
+        // (Re-)arm: the DMA needs a full first descriptor before it starts.
+        if xfer.is_none() {
+            let mut stream = buf.take().unwrap();
+            // Seed everything the DMA will read on this lap, so a cue playing
+            // now is heard immediately instead of after the ring drains.
+            session.fill_stream(&mut stream);
+            match tx.take().unwrap().write(stream) {
+                Ok(started) => xfer = Some(started),
+                Err((e, returned_tx, returned_buf)) => {
                     warn!("I2S start failed: {:?}", e);
-                    Timer::after(Duration::from_millis(50)).await;
+                    tx = Some(returned_tx);
+                    buf = Some(returned_buf);
+                    Timer::after(IDLE_POLL).await;
                     continue;
                 }
-            };
-
-            let sound = loop {
-                if let Some(sound) = take_cue() {
-                    break sound;
-                }
-                Timer::after(IDLE_POLL).await;
-            };
-
-            drop(xfer);
-            session.begin(clip_for(sound));
-            // Fall through and arm a fresh transfer over clip samples.
+            }
         }
 
-        // Seed the ring with clip samples before arming, so the cue starts at
-        // once instead of after an empty lap. Re-arming also wipes whatever a
-        // stalled transfer left behind.
-        session.prefill(&mut ring.0);
-        let mut xfer = match i2s_tx.write_dma_circular(&ring.0) {
-            Ok(xfer) => xfer,
-            Err(e) => {
-                warn!("I2S start failed: {:?}", e);
-                Timer::after(Duration::from_millis(50)).await;
-                continue;
+        let stalled = {
+            let active = xfer.as_mut().unwrap();
+            while active.available_bytes() > 0 {
+                // Deref to the transfer's buffer view: the transfer itself is
+                // not a sink.
+                session.fill_stream(&mut **active);
             }
+            active.is_done()
         };
 
-        while !session.is_idle() {
-            // Cutting a cue off means re-arming: a circular ring already holds
-            // a lap of the old clip, so there is no way to shorten it in place.
-            if let Some(sound) = take_cue() {
-                session.begin(clip_for(sound));
-                break;
-            }
-            if !top_up(&mut xfer, &mut session) {
-                // Keep the cursor so the re-arm resumes the cue in flight.
-                warn!("I2S DMA stalled, re-arming");
-                break;
-            }
-            Timer::after(POLL).await;
+        if stalled {
+            warn!("I2S DMA stalled, re-arming");
+            let (returned_tx, returned_buf) = xfer.take().unwrap().stop();
+            tx = Some(returned_tx);
+            buf = Some(reuse_stream(returned_buf));
+            continue;
         }
 
-        drop(xfer);
-        if !session.is_idle() {
-            // Re-arming is a stop/start; give the codec line a moment to settle.
-            Timer::after(Duration::from_millis(2)).await;
-        }
+        Timer::after(if session.is_idle() { IDLE_POLL } else { POLL }).await;
     }
 }
 
-/// Drain everything the DMA has consumed into the ring.
-///
-/// Returns false on a DMA error, which the caller answers by re-arming. Plain
-/// fn so the stage buffer stays off the statically allocated task future.
-fn top_up(
-    xfer: &mut DmaTransferTxCircular<'_, I2sTx<'static, Blocking>>,
-    session: &mut Session,
-) -> bool {
-    let mut stage = [0u8; STAGE];
-    loop {
-        let available = match xfer.available() {
-            Ok(available) => available,
-            Err(_) => return false,
-        };
-        // Whole stereo frames only.
-        let n = available.min(STAGE) & !3;
-        if n == 0 {
-            return true;
-        }
-        session.fill(&mut stage[..n]);
-        if xfer.push(&stage[..n]).is_err() {
-            return false;
-        }
+/// The parts of a stream buffer the session needs: room to write into, and a
+/// way to read back how much was written. Implemented for both the buffer and
+/// the transfer's view of it.
+trait StreamSink {
+    fn push_with(&mut self, f: impl FnOnce(&mut [u8]) -> usize) -> usize;
+}
+
+impl StreamSink for DmaTxStreamBuf {
+    fn push_with(&mut self, f: impl FnOnce(&mut [u8]) -> usize) -> usize {
+        DmaTxStreamBuf::push_with(self, f)
+    }
+}
+
+impl StreamSink for DmaTxStreamBufView {
+    fn push_with(&mut self, f: impl FnOnce(&mut [u8]) -> usize) -> usize {
+        DmaTxStreamBufView::push_with(self, f)
     }
 }
 
@@ -278,7 +265,7 @@ struct Session {
 }
 
 impl Session {
-    /// Nothing playing: the transfer may idle hands-off.
+    /// Nothing playing: the stream gets zeros.
     const fn idle() -> Self {
         Self {
             clip: None,
@@ -294,24 +281,26 @@ impl Session {
         self.scrub = SCRUB_BYTES;
     }
 
-    /// Clip drained and its silence tail pushed: the ring holds nothing but
-    /// zeros, so the next lap can idle hands-off.
+    /// Clip drained and its silence tail pushed: the stream now carries
+    /// nothing but zeros, so the task can idle on a slow poll.
     const fn is_idle(&self) -> bool {
         self.clip.is_none() && self.scrub == 0
     }
 
-    /// Fill the ring before it is armed, so the cue starts immediately.
-    ///
-    /// The silence this may write (when the clip is shorter than the ring) does
-    /// not count towards the scrub: the scrub exists to overwrite clip samples
-    /// left in the ring, and those have not been played yet.
-    fn prefill(&mut self, out: &mut [u8]) {
-        self.write(out, false);
-    }
-
-    /// Top up the ring behind the DMA, counting silence towards the scrub.
-    fn fill(&mut self, out: &mut [u8]) {
-        self.write(out, true);
+    /// Fill everything the stream has room for, counting silence towards the
+    /// scrub.
+    fn fill_stream<S: StreamSink>(&mut self, stream: &mut S) {
+        loop {
+            let pushed = stream.push_with(|out| {
+                // Whole stereo frames only.
+                let n = out.len() & !3;
+                self.write(&mut out[..n], true);
+                n
+            });
+            if pushed == 0 {
+                return;
+            }
+        }
     }
 
     /// Fill `out` with stereo s16le frames, one source sample per frame.
