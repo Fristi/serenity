@@ -304,6 +304,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
+name = "axp2101-embedded"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e453fe35468bafa7ead27c20c43dbcc71990b5c242c48d276d9d61bf019ea193"
+dependencies = [
+ "embedded-hal 1.0.0",
+ "embedded-hal-async",
+]
+
+[[package]]
 name = "az"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -852,6 +862,7 @@ checksum = "879ed2bad200332bf3d47c88e349076f02d136b2d8cd020c717469b9beae921a"
 dependencies = [
  "defmt 1.2.0",
  "embedded-hal 1.0.0",
+ "embedded-hal-async",
 ]
 
 [[package]]
@@ -1449,16 +1460,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "embedded-hal-bus"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "513e0b3a8fb7d3013a8ae17a834283f170deaf7d0eeab0a7c1a36ad4dd356d22"
-dependencies = [
- "critical-section",
- "embedded-hal 1.0.0",
-]
-
-[[package]]
 name = "embedded-io"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2034,6 +2035,7 @@ name = "firmware"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axp2101-embedded",
  "bytemuck",
  "critical-section",
  "cst92xx",
@@ -2048,7 +2050,6 @@ dependencies = [
  "embedded-graphics",
  "embedded-hal 1.0.0",
  "embedded-hal-async",
- "embedded-hal-bus",
  "esp-backtrace",
  "esp-bootloader-esp-idf",
  "esp-hal",

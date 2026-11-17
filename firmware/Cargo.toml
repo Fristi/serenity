@@ -54,15 +54,13 @@ embedded-hal = "1.0.0"
 embedded-graphics = "0.8.2"
 
 embedded-hal-async = "1.0.0"
-embedded-hal-bus = "0.3.0"
 
-# CST9220 capacitive touch controller. The shared I2C bus is driven through
-# embedded-hal-bus' RefCellDevice, which only implements the blocking I2C trait,
-# so the blocking driver is used instead of the default async one.
-cst92xx = { version = "0.2.4", default-features = false, features = [
-  "blocking",
-  "defmt",
-] }
+# AXP2101 PMIC. The shared bus is wrapped by `firmware::i2c::AsyncRefCellDevice`
+# because embedded-hal-bus has no async RefCell device.
+axp2101-embedded = { version = "0.3.0", features = ["async"] }
+
+# CST9220 capacitive touch controller, on the shared async I2C bus.
+cst92xx = { version = "0.2.4", features = ["async", "defmt"] }
 
 embedded-alloc = { version = "0.5" }
 bytemuck = { version = "1.15.0", features = ["derive"] }
