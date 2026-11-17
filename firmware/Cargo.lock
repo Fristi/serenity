@@ -1584,6 +1584,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b5343afd4a8365a643ac588dab4cf234a190c7f6c88c9f6dd6ffe00837661b7"
 
 [[package]]
+name = "es8311-async"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72c32a4d9a1f50dad2f2b840f442f07576f11888777ea42340aeaa62c92bd231"
+dependencies = [
+ "defmt 1.2.0",
+ "embedded-hal-async",
+]
+
+[[package]]
 name = "esp-alloc"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2050,6 +2060,7 @@ dependencies = [
  "embedded-graphics",
  "embedded-hal 1.0.0",
  "embedded-hal-async",
+ "es8311-async",
  "esp-backtrace",
  "esp-bootloader-esp-idf",
  "esp-hal",

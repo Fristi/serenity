@@ -13,7 +13,7 @@ use core::cell::RefCell;
 
 use anyhow::anyhow;
 use cst92xx::{CST92xx, TouchConfig};
-use defmt::{error, info, warn};
+use defmt::{error, info, warn, Debug2Format};
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Instant, Timer};
 use esp_backtrace as _;
@@ -26,9 +26,9 @@ use esp_hal::{
 use esp_println as _;
 use firmware::touch::TouchTracker;
 use firmware::{
-    audio,
-    es8311::{self, Es8311},
-    display, platform, renderer,
+    audio, display, es8311,
+    i2c::AsyncRefCellDevice,
+    platform, renderer,
 };
 use ui::slint;
 
@@ -86,15 +86,17 @@ async fn run(spawner: Spawner) -> anyhow::Result<()> {
 
     info!("Embassy initialized!");
 
-    // ── Shared I2C bus (AXP2101 + touch controller) ────────────────────────
+    // ── Shared I2C bus (AXP2101 + touch + codec) ───────────────────────────
     // Pins from the board schematic: SDA=GPIO8, SCL=GPIO7.
+    // All three devices use async drivers, so the bus stays in async mode.
     let i2c = I2c::new(
         peripherals.I2C0,
         I2cConfig::default().with_frequency(esp_hal::time::Rate::from_khz(400)),
     )
     .map_err(|e| anyhow!("I2C init failed: {e}"))?
     .with_sda(peripherals.GPIO8)
-    .with_scl(peripherals.GPIO7);
+    .with_scl(peripherals.GPIO7)
+    .into_async();
     let i2c_refcell = RefCell::new(i2c);
 
     // ── Display ────────────────────────────────────────────────────────────
@@ -116,27 +118,19 @@ async fn run(spawner: Spawner) -> anyhow::Result<()> {
     // controller is polled from the render loop instead, in the same thread,
     // which keeps the shared I2C bus free of cross-task locking.
     let touch_rst = Output::new(peripherals.GPIO11, Level::High, OutputConfig::default());
-    let touch_dev = embedded_hal_bus::i2c::RefCellDevice::new(&i2c_refcell);
-    let mut touch = CST92xx::new(touch_dev, esp_hal::delay::Delay::new())
+    let touch_dev = AsyncRefCellDevice::new(&i2c_refcell);
+    let mut touch = CST92xx::new(touch_dev, embassy_time::Delay)
         .with_reset(touch_rst)
         // Scale whatever the panel reports to the 480x480 Slint window.
         .with_config(TouchConfig::default().with_target_resolution(480, 480));
 
-    match touch.init() {
+    match touch.init().await {
         Ok(()) => info!("Touch controller ready: {}", touch.model_name()),
         Err(e) => error!("Touch init failed: {:?}", e),
     }
 
     // ── Speaker (ES8311 over I2S) ──────────────────────────────────────────
-    // Shares I2C0 with the AXP2101 and the touch controller. The codec comes up
-    // muted and the playback task starts streaming silence first, so the amp
-    // (which has no enable pin) never amplifies a floating data line.
-    let mut codec = Es8311::new(embedded_hal_bus::i2c::RefCellDevice::new(&i2c_refcell));
-    match codec.init() {
-        Ok(()) => info!("ES8311 ready (muted)"),
-        Err(e) => error!("ES8311 init failed: {:?}", e),
-    }
-
+    // Shares I2C0 with the AXP2101 and the touch controller.
     audio::start(
         spawner,
         peripherals.I2S0,
@@ -149,11 +143,23 @@ async fn run(spawner: Spawner) -> anyhow::Result<()> {
         },
     )?;
 
-    // One ring period of driven silence before the speaker is unmuted.
+    // The codec is an I2S slave: esp-hal only starts MCLK/BCLK/WS on the first
+    // DMA write, which the playback task issues, so give it one ring period of
+    // driven silence before configuring the codec.
     Timer::after(Duration::from_millis(250)).await;
-    match codec.set_volume(es8311::VOLUME_85) {
-        Ok(()) => info!("Speaker unmuted"),
-        Err(e) => error!("Speaker unmute failed: {:?}", e),
+
+    // The codec comes up muted, so the amp (which has no enable pin) never
+    // amplifies a floating data line. A codec failure only costs sound, so it
+    // is logged rather than aborting the UI.
+    match es8311::init(AsyncRefCellDevice::new(&i2c_refcell)).await {
+        Ok(mut codec) => {
+            info!("ES8311 ready (muted)");
+            match es8311::unmute(&mut codec).await {
+                Ok(()) => info!("Speaker unmuted"),
+                Err(e) => error!("Speaker unmute failed: {}", Debug2Format(&e)),
+            }
+        }
+        Err(e) => error!("ES8311 init failed: {}", Debug2Format(&e)),
     }
 
     let mut touch_tracker = TouchTracker::new();
@@ -181,7 +187,7 @@ async fn run(spawner: Spawner) -> anyhow::Result<()> {
         };
         if last_touch_poll.elapsed() >= poll_interval {
             last_touch_poll = Instant::now();
-            match touch.touches() {
+            match touch.touches().await {
                 Ok(points) => {
                     if let Some(event) = touch_tracker.update(&points) {
                         renderer::dispatch_touch(&window, event);

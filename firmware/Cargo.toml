@@ -62,6 +62,9 @@ axp2101-embedded = { version = "0.3.0", features = ["async"] }
 # CST9220 capacitive touch controller, on the shared async I2C bus.
 cst92xx = { version = "0.2.4", features = ["async", "defmt"] }
 
+# ES8311 speaker codec, configured over the same async bus.
+es8311-async = { version = "0.1.0", features = ["defmt"] }
+
 embedded-alloc = { version = "0.5" }
 bytemuck = { version = "1.15.0", features = ["derive"] }
 embassy-futures = "0.1.2"
